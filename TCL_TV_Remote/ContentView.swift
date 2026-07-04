@@ -2,20 +2,36 @@
 //  ContentView.swift
 //  TCL_TV_Remote
 //
-//  Created by Bhushan Patil on 04/07/26.
-//
 
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var viewModel = RemoteViewModel()
+    @State private var hasBeenBackgrounded = false
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        NavigationStack {
+            RemoteView(viewModel: viewModel)
         }
-        .padding()
+        .sheet(isPresented: $viewModel.showSetup) {
+            DeviceSetupView(viewModel: viewModel)
+        }
+        .onAppear {
+            ClientCertificateStore.prepareCertificates()
+            if viewModel.savedDevice == nil {
+                viewModel.showSetup = true
+            }
+            viewModel.onAppear()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .background {
+                hasBeenBackgrounded = true
+            }
+            if newPhase == .active, hasBeenBackgrounded {
+                viewModel.onReturnToForeground()
+            }
+        }
     }
 }
 

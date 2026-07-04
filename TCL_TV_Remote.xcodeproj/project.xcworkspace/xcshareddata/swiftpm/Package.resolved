@@ -1,0 +1,15 @@
+{
+  "originHash" : "0f06a241f3648086a47f652c31b65823f611b83ebe070eccd748652c9eb148c0",
+  "pins" : [
+    {
+      "identity" : "androidtvremotecontrol",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/odyshewroman/AndroidTVRemoteControl",
+      "state" : {
+        "revision" : "4b915e19f1574af67880d08ee0495521355ac8fe",
+        "version" : "1.3.5"
+      }
+    }
+  ],
+  "version" : 3
+}
