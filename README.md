@@ -17,6 +17,7 @@ Uses the [Android TV Remote v2](https://github.com/odyshewroman/AndroidTVRemoteC
 
 ## Requirements
 
+- **iOS 17.0** or later
 - iPhone on the **same Wi‑Fi** as the TV
 - Google TV or Android TV with **Android TV Remote Service** (pre-installed on most Google TVs)
 - Xcode to build and install on your device
@@ -35,6 +36,12 @@ Uses the [Android TV Remote v2](https://github.com/odyshewroman/AndroidTVRemoteC
 Works with most **Google TV** and **Android TV** devices (TCL, Chromecast with Google TV, Sony, Hisense, Nvidia Shield, etc.).
 
 Does **not** work with Amazon Fire TV, Roku, Samsung, or LG smart TVs.
+
+## App Store
+
+See [docs/APP_STORE.md](docs/APP_STORE.md) for submission checklist, listing text, and review notes.
+
+Privacy policy: [docs/privacy-policy.html](docs/privacy-policy.html) (host via GitHub Pages for the App Store URL).
 
 ## License
 
