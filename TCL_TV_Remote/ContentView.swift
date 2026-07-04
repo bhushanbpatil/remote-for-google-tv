@@ -4,11 +4,11 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var viewModel = RemoteViewModel()
-    @State private var hasBeenBackgrounded = false
 
     var body: some View {
         NavigationStack {
@@ -19,18 +19,30 @@ struct ContentView: View {
         }
         .onAppear {
             ClientCertificateStore.prepareCertificates()
+            viewModel.ensureIdleOnLaunch()
             if viewModel.savedDevice == nil {
                 viewModel.showSetup = true
             }
-            viewModel.onAppear()
         }
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .background {
-                hasBeenBackgrounded = true
+            switch newPhase {
+            case .inactive:
+                viewModel.onEnterInactive()
+            case .background:
+                viewModel.onEnterBackground()
+            case .active:
+                viewModel.onBecomeActive()
+            @unknown default:
+                break
             }
-            if newPhase == .active, hasBeenBackgrounded {
-                viewModel.onReturnToForeground()
-            }
+        }
+        // scenePhase alone is unreliable for app-switcher resume; UIKit notifications
+        // are a backup so we always tear down when leaving / returning.
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            viewModel.onEnterBackground()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)) { _ in
+            viewModel.onBecomeActive()
         }
     }
 }

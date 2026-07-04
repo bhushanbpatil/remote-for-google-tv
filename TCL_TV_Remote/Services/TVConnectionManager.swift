@@ -12,10 +12,20 @@ final class TVConnectionManager: @unchecked Sendable {
     var onCurrentApp: (@Sendable (String?) -> Void)?
 
     private let queue = DispatchQueue(label: "com.bhution.tcltvremote.connection")
-    private let pairingManager: PairingManager
-    private let remoteManager: RemoteManager
+    private let tlsManager: TLSManager
+    private let cryptoManager: CryptoManager
+    private let deviceInfo: CommandNetwork.DeviceInfo
+
+    private var pairingManager: PairingManager?
+    private var remoteManager: RemoteManager?
     private var currentHost: String?
     private var isPairingActive = false
+    private var isRemoteReady = false
+    private var sessionID: UInt64 = 0
+    /// Set by the view model when the user explicitly taps Connect / pair.
+    private var userInitiatedSessionID: UInt64 = 0
+
+    private static let tvUnavailableMessage = "Can't reach the TV. It may be fully off — turn it on once with the TV remote. On TCL Google TV, enable Settings → System → Power and energy → Screenless service to control it while the screen is off."
 
     init() {
         ClientCertificateStore.prepareCertificates()
@@ -49,18 +59,26 @@ final class TVConnectionManager: @unchecked Sendable {
             }
         }
 
-        pairingManager = PairingManager(tlsManager, cryptoManager)
-        remoteManager = RemoteManager(
-            tlsManager,
-            CommandNetwork.DeviceInfo("client", "iPhone", "1.0", "Remote for Google TV", "1")
-        )
+        self.cryptoManager = cryptoManager
+        self.tlsManager = tlsManager
+        self.deviceInfo = CommandNetwork.DeviceInfo("client", "iPhone", "1.0", "Remote for Google TV", "1")
     }
 
+    /// User tapped Connect — the only path that may open ports 6466/6467 on the TV.
     func connect(to host: String) {
         queue.async { [self] in
+            sessionID &+= 1
+            userInitiatedSessionID = sessionID
+            let session = sessionID
+
+            stopNetworkActivity()
+
             let normalizedHost = HostAddressNormalizer.clean(host)
             currentHost = normalizedHost
             isPairingActive = false
+            isRemoteReady = false
+
+            guard session == sessionID, session == userInitiatedSessionID else { return }
 
             guard ClientCertificateStore.validateCertificates() else {
                 notifyPhase(.error("Client certificate is invalid. Tap Forget TV, then try again."))
@@ -72,103 +90,170 @@ final class TVConnectionManager: @unchecked Sendable {
             notifyPhase(.connecting)
 
             if TVStorage.isPaired {
-                connectRemote(host: normalizedHost)
+                connectRemote(host: normalizedHost, session: session)
             } else {
-                beginPairing(host: normalizedHost)
+                beginPairing(host: normalizedHost, session: session)
             }
         }
     }
 
     func submitPairingCode(_ code: String) {
         queue.async { [self] in
+            guard isPairingActive, sessionID == userInitiatedSessionID else { return }
             notifyStatus("Verifying pairing code…")
-            pairingManager.sendSecret(code.uppercased())
+            pairingManager?.sendSecret(code.uppercased())
         }
     }
 
     func sendKey(_ key: TVKey) {
         queue.async { [self] in
-            remoteManager.send(ATVKeyPress(key: key))
+            guard isRemoteReady else {
+                notifyStatus("Not connected. Tap Connect first.")
+                return
+            }
+            remoteManager?.send(ATVKeyPress(key: key))
         }
     }
 
     func launchApp(deepLink: String) {
         queue.async { [self] in
-            remoteManager.send(ATVDeepLink(url: deepLink))
+            guard isRemoteReady else {
+                notifyStatus("Not connected. Tap Connect first.")
+                return
+            }
+            remoteManager?.send(ATVDeepLink(url: deepLink))
         }
     }
 
     func disconnect() {
         queue.async { [self] in
-            currentHost = nil
-            isPairingActive = false
+            userInitiatedSessionID = 0
+            sessionID &+= 1
+            stopNetworkActivity()
             notifyPhase(.disconnected)
             notifyStatus("Disconnected")
         }
     }
 
-    private func connectRemote(host: String) {
-        remoteManager.disconnect()
-        remoteManager.stateChanged = { [weak self] remoteState in
-            self?.handleRemoteState(remoteState, host: host)
+    /// Kill any live NWConnection without changing UI — used when the app resumes and
+    /// must not talk to the TV unless the user taps Connect again.
+    /// (Apple TN2277: treat NWConnection as short-lived; don't reuse across suspend.)
+    func teardownStaleConnections() {
+        queue.async { [self] in
+            userInitiatedSessionID = 0
+            sessionID &+= 1
+            stopNetworkActivity()
         }
-        remoteManager.connect(host)
     }
 
-    private func handleRemoteState(_ state: RemoteManager.RemoteState, host: String) {
+    private func stopNetworkActivity() {
+        pairingManager?.stateChanged = nil
+        remoteManager?.stateChanged = nil
+        pairingManager?.disconnect()
+        remoteManager?.disconnect()
+        pairingManager = nil
+        remoteManager = nil
+        currentHost = nil
+        isPairingActive = false
+        isRemoteReady = false
+    }
+
+    private func connectRemote(host: String, session: UInt64) {
+        guard session == sessionID, session == userInitiatedSessionID else { return }
+
+        isRemoteReady = false
+        let remote = RemoteManager(tlsManager, deviceInfo)
+        remoteManager = remote
+        remote.stateChanged = { [weak self] remoteState in
+            self?.handleRemoteState(remoteState, host: host, session: session)
+        }
+        remote.connect(host)
+    }
+
+    private func markRemoteReady(session: UInt64, phase: ConnectionPhase = .connected, status: String = "Connected") {
+        guard session == sessionID, session == userInitiatedSessionID else { return }
+        isRemoteReady = true
+        isPairingActive = false
+        notifyPhase(phase)
+        notifyStatus(status)
+    }
+
+    private func handleRemoteState(_ state: RemoteManager.RemoteState, host: String, session: UInt64) {
+        guard session == sessionID, session == userInitiatedSessionID else { return }
+
         switch state {
         case .idle:
-            notifyPhase(.disconnected)
+            isRemoteReady = false
 
         case .connectionSetUp, .connectionPrepairing:
             notifyPhase(.connecting)
             notifyStatus("Setting up connection…")
 
         case .connected, .firstConfigSent, .secondConfigSent:
-            notifyPhase(.connected)
-            notifyStatus("Connected")
+            markRemoteReady(session: session)
 
         case .fisrtConfigMessageReceived(let info):
-            notifyStatus("Connected to \(info.model.isEmpty ? "Google TV" : info.model)")
+            markRemoteReady(
+                session: session,
+                status: "Connected to \(info.model.isEmpty ? "Google TV" : info.model)"
+            )
 
         case .paired(let runningApp):
+            guard session == sessionID, session == userInitiatedSessionID else { return }
+            isRemoteReady = true
+            isPairingActive = false
             notifyPhase(.connected)
             onCurrentApp?(runningApp)
             notifyStatus(runningApp.map { "Running: \($0)" } ?? "Connected")
 
         case .error(.connectionWaitingError):
-            beginPairing(host: host)
-
-        case .error(.connectionFailed):
-            if !isPairingActive {
-                notifyStatus("Not paired yet — starting pairing…")
-                beginPairing(host: host)
+            // Library demo auto-starts pairing here — that causes surprise codes on the TV.
+            // Never auto-pair; user must tap Forget TV then Connect to re-pair explicitly.
+            isRemoteReady = false
+            notifyPhase(.disconnected)
+            if TVStorage.isPaired {
+                notifyStatus("Your TV no longer recognizes this phone. Tap ⋯ → Forget TV, then pair again.")
             } else {
-                notifyPhase(.error("Connection failed"))
-                notifyStatus("Connection failed. Check IP and Wi-Fi.")
+                notifyStatus("Could not reach the TV for pairing. Check IP and Wi-Fi.")
             }
 
+        case .error(.connectionFailed):
+            isRemoteReady = false
+            notifyPhase(.disconnected)
+            notifyStatus(Self.tvUnavailableMessage)
+
         case .error(let error):
+            isRemoteReady = false
             notifyPhase(.error(error.toString()))
             notifyStatus("Error: \(error.toString())")
         }
     }
 
-    private func beginPairing(host: String) {
+    private func beginPairing(host: String, session: UInt64) {
+        guard session == sessionID, session == userInitiatedSessionID else { return }
+        guard !TVStorage.isPaired else {
+            notifyPhase(.disconnected)
+            notifyStatus(Self.tvUnavailableMessage)
+            return
+        }
         guard !isPairingActive else { return }
         isPairingActive = true
 
         notifyPhase(.needsPairing)
         notifyStatus("Starting pairing — watch your TV for a code.")
 
-        pairingManager.stateChanged = { [weak self] pairingState in
-            self?.handlePairingState(pairingState, host: host)
+        let pairing = PairingManager(tlsManager, cryptoManager)
+        pairingManager = pairing
+        pairing.stateChanged = { [weak self] pairingState in
+            self?.handlePairingState(pairingState, host: host, session: session)
         }
 
-        pairingManager.connect(host, "client", "iPhone")
+        pairing.connect(host, "client", "iPhone")
     }
 
-    private func handlePairingState(_ state: PairingManager.PairingState, host: String) {
+    private func handlePairingState(_ state: PairingManager.PairingState, host: String, session: UInt64) {
+        guard session == sessionID, session == userInitiatedSessionID else { return }
+
         switch state {
         case .waitingCode:
             notifyPhase(.waitingForCode)
@@ -179,7 +264,7 @@ final class TVConnectionManager: @unchecked Sendable {
             isPairingActive = false
             notifyPhase(.paired)
             notifyStatus("Paired successfully. Connecting…")
-            connectRemote(host: host)
+            connectRemote(host: host, session: session)
 
         case .error(.wrongCode):
             notifyPhase(.waitingForCode)

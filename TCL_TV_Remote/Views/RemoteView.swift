@@ -30,7 +30,7 @@ struct RemoteView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button("Reconnect") { viewModel.reconnect() }
+                    Button("Connect") { viewModel.reconnect() }
                     Button("Forget TV", role: .destructive) { viewModel.forgetTV() }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -55,6 +55,7 @@ struct RemoteView: View {
                 withAnimation(.snappy) {
                     isStatusExpanded.toggle()
                 }
+                handleStatusHeaderTap()
             } label: {
                 HStack(spacing: 8) {
                     Circle()
@@ -118,11 +119,23 @@ struct RemoteView: View {
 
     private var statusTitle: String {
         if viewModel.isConnected { return "Connected" }
+        guard viewModel.isUserConnectInProgress else {
+            return viewModel.savedDevice != nil ? "Not connected · Tap to connect" : "Not connected · Tap to set up"
+        }
         switch viewModel.phase {
         case .connecting: return "Connecting…"
         case .needsPairing, .waitingForCode: return "Pairing…"
         case .error: return "Error"
         default: return "Not connected"
+        }
+    }
+
+    private func handleStatusHeaderTap() {
+        guard !viewModel.isConnected, !viewModel.isUserConnectInProgress else { return }
+        if viewModel.savedDevice != nil {
+            viewModel.reconnect()
+        } else {
+            viewModel.showSetup = true
         }
     }
 
@@ -192,8 +205,8 @@ struct RemoteView: View {
                 }
             }
 
-            if !viewModel.isConnected {
-                Button("Connect to TV") {
+            if !viewModel.isConnected, viewModel.savedDevice == nil {
+                Button("Set Up TV") {
                     viewModel.showSetup = true
                 }
                 .buttonStyle(.borderedProminent)

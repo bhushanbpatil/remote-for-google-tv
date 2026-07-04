@@ -27,6 +27,16 @@ enum ConnectionPhase: Equatable {
     case paired
     case connected
     case error(String)
+
+    /// True while a Connect attempt is still in progress (not a stable connected/idle state).
+    var isInFlight: Bool {
+        switch self {
+        case .connecting, .needsPairing, .waitingForCode, .paired:
+            return true
+        case .disconnected, .connected, .error:
+            return false
+        }
+    }
 }
 
 struct StreamingApp: Identifiable {

@@ -63,6 +63,7 @@ struct DeviceSetupView: View {
                     Label("TV IP: Settings → Network on the TV", systemImage: "tv")
                     Label("Allow Local Network for this app in iPhone Settings", systemImage: "hand.raised")
                     Label("Discovery often fails on real iPhones — Manual IP still works", systemImage: "info.circle")
+                    Label("TCL: enable Screenless service to control TV when the screen is off", systemImage: "power")
                 }
                 .font(.footnote)
                 .foregroundStyle(.secondary)

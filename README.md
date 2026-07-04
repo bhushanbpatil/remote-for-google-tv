@@ -13,7 +13,7 @@ Uses the [Android TV Remote v2](https://github.com/odyshewroman/AndroidTVRemoteC
 - Settings, Input, Menu, Captions
 - Quick launch for popular streaming apps
 - Bonjour discovery + manual IP entry
-- Auto-reconnect when returning from background
+- Manual connect — the app does not touch your TV until you tap Connect
 
 ## Requirements
 

@@ -18,12 +18,20 @@ final class RemoteViewModel {
     let discovery = TVDiscoveryService()
     private let connection = TVConnectionManager()
 
+    /// Non-zero only between an explicit Connect tap and stop/background/teardown.
+    private(set) var activeConnectToken: UInt64 = 0
+
     var isConnected: Bool {
-        phase == .connected || phase == .paired
+        activeConnectToken > 0 && (phase == .connected || phase == .paired)
     }
 
     var needsPairingCode: Bool {
-        phase == .waitingForCode
+        activeConnectToken > 0 && !TVStorage.isPaired && phase == .waitingForCode
+    }
+
+    /// Pairing/connect UI is shown only for a user-started Connect attempt.
+    var isUserConnectInProgress: Bool {
+        activeConnectToken > 0 && phase.isInFlight
     }
 
     var savedDevice: TVDevice? {
@@ -33,39 +41,70 @@ final class RemoteViewModel {
     init() {
         connection.onPhaseChange = { [weak self] phase in
             Task { @MainActor in
-                self?.phase = phase
+                guard let self, self.activeConnectToken > 0 else { return }
+                self.phase = phase
             }
         }
         connection.onStatusMessage = { [weak self] message in
             Task { @MainActor in
-                self?.statusMessage = message
+                guard let self, self.activeConnectToken > 0 else { return }
+                self.statusMessage = message
             }
         }
         connection.onCurrentApp = { [weak self] app in
             Task { @MainActor in
-                self?.currentApp = app
+                guard let self, self.activeConnectToken > 0 else { return }
+                self.currentApp = app
             }
         }
 
         if let device = TVStorage.savedDevice {
             manualIP = device.host
+            statusMessage = "Tap Connect when you want to control your TV."
         }
     }
 
-    func onAppear() {
-        if let device = TVStorage.savedDevice, TVStorage.isPaired {
-            connect(to: device)
+    func onEnterBackground() {
+        stopAllTVActivity()
+    }
+
+    func onEnterInactive() {
+        // App switcher often hits .inactive before .background — stop any live session
+        // (including Connected) so the TV isn't contacted while the app isn't in use.
+        if activeConnectToken > 0 {
+            stopAllTVActivity()
         }
     }
 
-    func onReturnToForeground() {
-        guard let device = TVStorage.savedDevice, TVStorage.isPaired else { return }
-        switch phase {
-        case .connected, .paired, .connecting, .needsPairing, .waitingForCode:
-            return
-        case .disconnected, .error:
-            connect(to: device)
+    func onBecomeActive() {
+        // Warm resume from the app drawer frequently skips .background entirely.
+        // Always reset so a stale activeConnectToken can't resurrect Pairing UI.
+        stopAllTVActivity()
+        connection.teardownStaleConnections()
+    }
+
+    func ensureIdleOnLaunch() {
+        activeConnectToken = 0
+        connection.teardownStaleConnections()
+        clearIdleUI()
+    }
+
+    private func clearIdleUI() {
+        phase = .disconnected
+        pairingCode = ""
+        currentApp = nil
+        if savedDevice != nil {
+            statusMessage = "Tap Connect when you want to control your TV."
         }
+    }
+
+    private func stopAllTVActivity() {
+        activeConnectToken = 0
+        phase = .disconnected
+        pairingCode = ""
+        currentApp = nil
+        connection.disconnect()
+        statusMessage = "Tap Connect when you want to use the remote."
     }
 
     func startDiscovery() {
@@ -77,10 +116,13 @@ final class RemoteViewModel {
     }
 
     func connect(to device: TVDevice) {
+        activeConnectToken &+= 1
         TVStorage.save(device: device, paired: TVStorage.isPaired)
         manualIP = device.host
         showSetup = false
         pairingCode = ""
+        phase = .connecting
+        statusMessage = "Connecting…"
         connection.connect(to: device.host)
     }
 
@@ -95,6 +137,7 @@ final class RemoteViewModel {
     }
 
     func submitPairingCode() {
+        guard activeConnectToken > 0 else { return }
         let code = pairingCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard code.count == 6 else {
             statusMessage = "Enter the 6-character code from your TV."
@@ -112,6 +155,7 @@ final class RemoteViewModel {
     }
 
     func forgetTV() {
+        activeConnectToken = 0
         connection.disconnect()
         ClientCertificateStore.resetCertificates()
         TVStorage.clear()
@@ -124,10 +168,18 @@ final class RemoteViewModel {
     }
 
     func sendKey(_ key: TVKey) {
+        guard isConnected else {
+            statusMessage = "Not connected. Tap Connect first."
+            return
+        }
         connection.sendKey(key)
     }
 
     func launchApp(_ app: StreamingApp) {
+        guard isConnected else {
+            statusMessage = "Not connected. Tap Connect first."
+            return
+        }
         connection.launchApp(deepLink: app.deepLink)
     }
 }
